@@ -45,17 +45,7 @@ func initDB() *sql.DB {
 		log.Fatalf("Error opening database: %v", err)
 	}
 
-	// Drop existing tables to implement the database migration
-	dropTablesSQL := `
-	DROP TABLE IF EXISTS window_states;
-	DROP TABLE IF EXISTS profiles;
-	`
-	_, err = db.Exec(dropTablesSQL)
-	if err != nil {
-		log.Fatalf("Error dropping existing tables: %v", err)
-	}
-
-	// Create tables with the new schema
+	// Create tables if they don't exist yet
 	createTableSQL := `
 	CREATE TABLE IF NOT EXISTS profiles (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
