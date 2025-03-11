@@ -439,6 +439,7 @@ func main() {
 			}
 		}
 
+		statusLabel.SetText("Saving window states...")
 		states := getCurrentWindowStates()
 		err := saveWindowStates(db, profileName, states)
 		if err != nil {
@@ -479,6 +480,7 @@ func main() {
 			return
 		}
 
+		statusLabel.SetText("Loading window states...")
 		states, err := loadWindowStates(db, profileName)
 		if err != nil {
 			statusLabel.SetText(fmt.Sprintf("Error loading window states: %v", err))
@@ -490,6 +492,7 @@ func main() {
 			return
 		}
 
+		statusLabel.SetText("Restoring window states...")
 		restoreWindowStates(states)
 		statusLabel.SetText(fmt.Sprintf("Restored %d window states from profile '%s'", len(states), profileName))
 
@@ -525,29 +528,29 @@ func main() {
 	})
 
 	// Create layout with a clearer design for the combo profile selector
-	content := container.NewVBox(
+	topContent := container.NewVBox(
 		widget.NewLabel("Wisa - Window State Manager"),
-
 		widget.NewLabel("Select or Create Profile:"),
 		profileSelect,
-
 		// Profile name entry only shows when creating a new profile
 		container.New(
 			layout.NewFormLayout(),
 			widget.NewLabel("Profile Name:"),
 			profileNameEntry,
 		),
-
 		container.NewHBox(
 			saveButton,
 			loadButton,
 			deleteButton,
 		),
+	)
 
-		widget.NewLabel("Window States:"),
-		statesTextArea,
-
+	content := container.NewBorder(
+		topContent,
 		statusLabel,
+		nil,
+		nil,
+		container.NewVScroll(statesTextArea),
 	)
 
 	myWindow.SetContent(content)
