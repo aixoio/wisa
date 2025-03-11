@@ -45,45 +45,81 @@ func initDB() *sql.DB {
 		log.Fatalf("Error opening database: %v", err)
 	}
 
-	// Create table if it doesn't exist
+	// Drop existing tables to implement the database migration
+	dropTablesSQL := `
+	DROP TABLE IF EXISTS window_states;
+	DROP TABLE IF EXISTS profiles;
+	`
+	_, err = db.Exec(dropTablesSQL)
+	if err != nil {
+		log.Fatalf("Error dropping existing tables: %v", err)
+	}
+
+	// Create tables with the new schema
 	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS profiles (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL UNIQUE
+	);
 	CREATE TABLE IF NOT EXISTS window_states (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		profile_name TEXT NOT NULL,
+		profile_id INTEGER NOT NULL,
 		app_name TEXT NOT NULL,
 		window_title TEXT NOT NULL,
 		x REAL NOT NULL,
 		y REAL NOT NULL,
 		width REAL NOT NULL,
-		height REAL NOT NULL
-	);
-	CREATE TABLE IF NOT EXISTS profiles (
-		name TEXT PRIMARY KEY
+		height REAL NOT NULL,
+		FOREIGN KEY (profile_id) REFERENCES profiles(id)
 	);
 	`
 	_, err = db.Exec(createTableSQL)
 	if err != nil {
-		log.Fatalf("Error creating table: %v", err)
+		log.Fatalf("Error creating tables: %v", err)
 	}
 
 	return db
 }
 
+// Profile structure to hold both id and name
+type Profile struct {
+	ID   int
+	Name string
+}
+
 func saveWindowStates(db *sql.DB, profileName string, states []WindowState) error {
 	// First, ensure the profile exists
-	_, err := db.Exec("INSERT OR IGNORE INTO profiles (name) VALUES (?)", profileName)
+	var profileID int
+
+	// Try to get existing profile ID
+	err := db.QueryRow("SELECT id FROM profiles WHERE name = ?", profileName).Scan(&profileID)
 	if err != nil {
-		return fmt.Errorf("error saving profile: %v", err)
+		if err == sql.ErrNoRows {
+			// Profile doesn't exist, create it
+			result, err := db.Exec("INSERT INTO profiles (name) VALUES (?)", profileName)
+			if err != nil {
+				return fmt.Errorf("error creating profile: %v", err)
+			}
+
+			// Get the ID of the newly created profile
+			id, err := result.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("error getting new profile ID: %v", err)
+			}
+			profileID = int(id)
+		} else {
+			return fmt.Errorf("error checking if profile exists: %v", err)
+		}
 	}
 
 	// Delete any existing window states for this profile
-	_, err = db.Exec("DELETE FROM window_states WHERE profile_name = ?", profileName)
+	_, err = db.Exec("DELETE FROM window_states WHERE profile_id = ?", profileID)
 	if err != nil {
 		return fmt.Errorf("error clearing existing window states: %v", err)
 	}
 
 	// Insert the new window states
-	stmt, err := db.Prepare("INSERT INTO window_states (profile_name, app_name, window_title, x, y, width, height) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := db.Prepare("INSERT INTO window_states (profile_id, app_name, window_title, x, y, width, height) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return fmt.Errorf("error preparing statement: %v", err)
 	}
@@ -91,7 +127,7 @@ func saveWindowStates(db *sql.DB, profileName string, states []WindowState) erro
 
 	for _, state := range states {
 		_, err = stmt.Exec(
-			profileName,
+			profileID,
 			state.AppName,
 			state.WindowTitle,
 			state.X,
@@ -108,9 +144,19 @@ func saveWindowStates(db *sql.DB, profileName string, states []WindowState) erro
 }
 
 func loadWindowStates(db *sql.DB, profileName string) ([]WindowState, error) {
+	// First get the profile ID
+	var profileID int
+	err := db.QueryRow("SELECT id FROM profiles WHERE name = ?", profileName).Scan(&profileID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("profile %s not found", profileName)
+		}
+		return nil, fmt.Errorf("error finding profile: %v", err)
+	}
+
 	rows, err := db.Query(
-		"SELECT app_name, window_title, x, y, width, height FROM window_states WHERE profile_name = ?",
-		profileName,
+		"SELECT app_name, window_title, x, y, width, height FROM window_states WHERE profile_id = ?",
+		profileID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error querying window states: %v", err)
@@ -142,7 +188,7 @@ func loadWindowStates(db *sql.DB, profileName string) ([]WindowState, error) {
 }
 
 func getProfiles(db *sql.DB) ([]string, error) {
-	rows, err := db.Query("SELECT name FROM profiles")
+	rows, err := db.Query("SELECT name FROM profiles ORDER BY name")
 	if err != nil {
 		return nil, fmt.Errorf("error querying profiles: %v", err)
 	}
@@ -171,13 +217,24 @@ func deleteProfile(db *sql.DB, profileName string) error {
 		return fmt.Errorf("error starting transaction: %v", err)
 	}
 
-	_, err = tx.Exec("DELETE FROM window_states WHERE profile_name = ?", profileName)
+	// First get the profile ID
+	var profileID int
+	err = tx.QueryRow("SELECT id FROM profiles WHERE name = ?", profileName).Scan(&profileID)
+	if err != nil {
+		tx.Rollback()
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("profile %s not found", profileName)
+		}
+		return fmt.Errorf("error finding profile: %v", err)
+	}
+
+	_, err = tx.Exec("DELETE FROM window_states WHERE profile_id = ?", profileID)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("error deleting window states: %v", err)
 	}
 
-	_, err = tx.Exec("DELETE FROM profiles WHERE name = ?", profileName)
+	_, err = tx.Exec("DELETE FROM profiles WHERE id = ?", profileID)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("error deleting profile: %v", err)
