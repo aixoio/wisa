@@ -300,17 +300,22 @@ func main() {
 	myWindow := myApp.NewWindow("Wisa - Window State Manager")
 	myWindow.Resize(fyne.NewSize(600, 500))
 
-	// Create profile selection dropdown
+	// Create profile selection dropdown with option to create new profiles
 	profiles, err := getProfiles(db)
 	if err != nil {
 		log.Printf("Error getting profiles: %v", err)
 		profiles = []string{}
 	}
 
-	profileSelect := widget.NewSelect(profiles, nil)
-	if len(profiles) > 0 {
-		profileSelect.SetSelected(profiles[0])
-	}
+	// Add "Create New Profile..." option
+	profileOptions := append([]string{"Create New Profile..."}, profiles...)
+
+	var selectedProfile string
+	profileSelect := widget.NewSelect(profileOptions, nil)
+	profileSelect.SetSelected("Create New Profile...")
+
+	// Track if we're in "create new" mode
+	var isCreatingNew bool = true
 
 	// Create input field for new profile name with fixed width
 	profileNameEntry := widget.NewEntry()
@@ -332,12 +337,37 @@ func main() {
 			log.Printf("Error getting profiles: %v", err)
 			return
 		}
-		profileSelect.Options = newProfiles
-		if len(newProfiles) > 0 {
-			profileSelect.SetSelected(newProfiles[0])
+
+		// Always add "Create New Profile..." option at the top
+		profileOptions := append([]string{"Create New Profile..."}, newProfiles...)
+		profileSelect.Options = profileOptions
+
+		// Try to keep the previous selection if it exists
+		if selectedProfile != "" && selectedProfile != "Create New Profile..." {
+			// Check if the previously selected profile still exists
+			var found bool
+			for _, profile := range newProfiles {
+				if profile == selectedProfile {
+					found = true
+					profileSelect.SetSelected(selectedProfile)
+					break
+				}
+			}
+
+			if !found {
+				// Previously selected profile no longer exists
+				profileSelect.SetSelected("Create New Profile...")
+				isCreatingNew = true
+				profileNameEntry.Enable()
+				profileNameEntry.SetText("")
+			}
 		} else {
-			profileSelect.SetSelected("")
+			// Default to "Create New Profile..." if no selection or was already on create new
+			profileSelect.SetSelected("Create New Profile...")
+			isCreatingNew = true
+			profileNameEntry.Enable()
 		}
+
 		profileSelect.Refresh()
 	}
 
@@ -364,6 +394,21 @@ func main() {
 			return
 		}
 
+		selectedProfile = selected
+
+		if selected == "Create New Profile..." {
+			isCreatingNew = true
+			profileNameEntry.Enable()
+			profileNameEntry.SetText("")
+			statesTextArea.SetText("Enter a name for your new profile")
+			return
+		}
+
+		// Not creating a new profile, so disable profile name entry
+		isCreatingNew = false
+		profileNameEntry.Disable()
+		profileNameEntry.SetText(selected)
+
 		states, err := loadWindowStates(db, selected)
 		if err != nil {
 			statesTextArea.SetText(fmt.Sprintf("Error: %v", err))
@@ -375,10 +420,23 @@ func main() {
 
 	// Create buttons
 	saveButton := widget.NewButton("Save Current Window States", func() {
-		profileName := profileNameEntry.Text
-		if profileName == "" {
-			statusLabel.SetText("Please enter a profile name")
-			return
+		var profileName string
+
+		if isCreatingNew {
+			// Using the text from the entry for a new profile
+			profileName = profileNameEntry.Text
+			if profileName == "" {
+				statusLabel.SetText("Please enter a profile name")
+				return
+			}
+		} else {
+			// Using the selected existing profile
+			profileName = selectedProfile
+			// Double check it's not the "Create New" option
+			if profileName == "Create New Profile..." {
+				statusLabel.SetText("Please select a valid profile or create a new one")
+				return
+			}
 		}
 
 		states := getCurrentWindowStates()
@@ -389,11 +447,22 @@ func main() {
 		}
 
 		statusLabel.SetText(fmt.Sprintf("Saved %d window states to profile '%s'", len(states), profileName))
-		profileNameEntry.SetText("")
+
+		if isCreatingNew {
+			profileNameEntry.SetText("")
+		}
+
 		refreshProfiles()
 
-		// Auto-select the newly created profile
-		profileSelect.SetSelected(profileName)
+		// Auto-select the newly created/updated profile in the dropdown
+		// We need to find it in the updated options list which now includes the "Create New" option
+		for _, option := range profileSelect.Options {
+			if option == profileName {
+				profileSelect.SetSelected(profileName)
+				break
+			}
+		}
+
 		displayWindowStates(states)
 	})
 
@@ -401,6 +470,12 @@ func main() {
 		profileName := profileSelect.Selected
 		if profileName == "" {
 			statusLabel.SetText("Please select a profile")
+			return
+		}
+
+		// Check if we're in "create new" mode - can't load a profile that doesn't exist yet
+		if profileName == "Create New Profile..." {
+			statusLabel.SetText("Please select an existing profile to load")
 			return
 		}
 
@@ -432,6 +507,12 @@ func main() {
 			return
 		}
 
+		// Check if we're in "create new" mode - can't delete a profile that doesn't exist yet
+		if profileName == "Create New Profile..." {
+			statusLabel.SetText("Please select an existing profile to delete")
+			return
+		}
+
 		err := deleteProfile(db, profileName)
 		if err != nil {
 			statusLabel.SetText(fmt.Sprintf("Error deleting profile: %v", err))
@@ -443,25 +524,29 @@ func main() {
 		refreshProfiles()
 	})
 
-	// Create layout with a simpler design
+	// Create layout with a clearer design for the combo profile selector
 	content := container.NewVBox(
 		widget.NewLabel("Wisa - Window State Manager"),
-		widget.NewLabel("Create New Profile:"),
-		// Use a fixed size container for the profile name entry to make it wider
+
+		widget.NewLabel("Select or Create Profile:"),
+		profileSelect,
+
+		// Profile name entry only shows when creating a new profile
 		container.New(
 			layout.NewFormLayout(),
-			widget.NewLabel("Name:"),
+			widget.NewLabel("Profile Name:"),
 			profileNameEntry,
 		),
-		saveButton,
-		widget.NewLabel("Window States:"),
-		statesTextArea,
-		widget.NewLabel("Manage Profiles:"),
-		profileSelect,
+
 		container.NewHBox(
+			saveButton,
 			loadButton,
 			deleteButton,
 		),
+
+		widget.NewLabel("Window States:"),
+		statesTextArea,
+
 		statusLabel,
 	)
 
